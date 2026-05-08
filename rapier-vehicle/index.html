@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Rapier raycast-wheel vehicle (literal port)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <script src="https://cdn.jsdelivr.net/gh/aframevr/aframe@6a054e85953bbcc71854bcd64f9abde0897be649/dist/aframe-master.min.js"></script>
+    <style>
+      html, body { margin: 0; padding: 0; overflow: hidden; }
+      #hud, #tune {
+        position: absolute; z-index: 10; color: #fff;
+        background: rgba(0,0,0,0.55); border-radius: 6px;
+        font-family: ui-sans-serif, system-ui, sans-serif;
+      }
+      #hud  { top: 12px; left: 12px;  font-size: 13px; padding: 8px 12px; line-height: 1.4; }
+      #tune { top: 12px; right: 12px; font-size: 12px; padding: 10px 12px; line-height: 1.6; min-width: 240px; }
+      #hud b { color: #ffd54a; }
+      #tune label { display: grid; grid-template-columns: 1fr 60px; align-items: center; gap: 8px; }
+      #tune input[type=range] { width: 100%; }
+      #tune .val { text-align: right; color: #ffd54a; font-variant-numeric: tabular-nums; }
+      #tune h3 { margin: 0 0 6px; font-size: 12px; font-weight: 600; opacity: 0.85; letter-spacing: 0.04em; text-transform: uppercase; }
+      #status {
+        position: absolute; bottom: 12px; left: 12px; z-index: 10;
+        font-family: ui-monospace, monospace; font-size: 11px; color: #ffd54a;
+        background: rgba(0,0,0,0.55); padding: 6px 10px; border-radius: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="hud">
+      <b>WASD</b> drive · <b>Space</b> brake · <b>R</b> reset · raycast-wheel vehicle
+    </div>
+
+    <div id="tune">
+      <h3>Tuning (live)</h3>
+      <label>Engine force <input id="t-engine" type="range" min="0" max="20"  step="0.5"  value="2"   ><span class="val" id="v-engine">2</span></label>
+      <label>Brake force  <input id="t-brake"  type="range" min="0" max="0.5" step="0.01" value="0.05"><span class="val" id="v-brake">0.05</span></label>
+      <label>Steer (rad)  <input id="t-steer"  type="range" min="0" max="0.5" step="0.01" value="0.13"><span class="val" id="v-steer">0.13</span></label>
+      <label>Susp. stiff  <input id="t-stiff"  type="range" min="4" max="80"  step="1"    value="24"  ><span class="val" id="v-stiff">24</span></label>
+      <label>Friction slip<input id="t-fric"   type="range" min="0.5" max="20" step="0.1" value="1.5" ><span class="val" id="v-fric">1.5</span></label>
+      <label>Side fric. K <input id="t-side"   type="range" min="0" max="20"  step="0.1"  value="3"   ><span class="val" id="v-side">3</span></label>
+      <label>Cam height   <input id="t-cam"    type="range" min="6" max="60"  step="1"    value="20"  ><span class="val" id="v-cam">20</span></label>
+    </div>
+
+    <div id="status">booting…</div>
+
+    <a-scene id="scene" background="color: #87ceeb">
+      <a-entity light="type: ambient; intensity: 0.6"></a-entity>
+      <a-entity light="type: directional; intensity: 0.9" position="10 20 10"></a-entity>
+      <a-entity id="camera" camera look-controls="enabled: false" position="0 20 0" rotation="-90 0 0"></a-entity>
+    </a-scene>
+
+    <script type="module">
+      /*
+       * Direct Rapier integration — no aframe-rapier-physics wrapper.
+       *
+       * The previous attempt at a raycast-wheel vehicle used the
+       * Elettrotecnica wrapper and the chassis terminaled at ~0.15 m/s
+       * under any engine force, with no diagnosable opposing force after
+       * many hours. The fresh-context prompt explicitly authorizes going
+       * direct when the wrapper is the obstacle, so this demo:
+       *   - imports @dimforge/rapier3d-compat as an ES module,
+       *   - owns its own RAPIER.World and steps it from a single
+       *     A-Frame component tick,
+       *   - is a LITERAL port of the working public reference at
+       *     https://github.com/isaac-mason/sketches
+       *       /tree/main/sketches/rapier/dynamic-raycast-vehicle-controller
+       *     — same chassis half-extents, same wheel positions, same
+       *     setWheel*** call ordering (Engine / Brake / Steering), same
+       *     accelerateForce/brakeForce/steerAngle defaults.
+       *
+       * The static scaffolding (ground, perimeter walls, parked cars,
+       * top-down camera, WASD, tuning sliders) matches experiments/rapier-demo
+       * so feel can be A/Bed against the simple single-body baseline.
+       */
+
+      import RAPIER from 'https://esm.sh/@dimforge/rapier3d-compat@0.14.0';
+      const status = document.getElementById('status');
+      try {
+        await RAPIER.init();
+      } catch (err) {
+        status.textContent = 'RAPIER.init() failed: ' + err;
+        throw err;
+      }
+      status.textContent = 'rapier ready — building scene…';
+      window.RAPIER = RAPIER;
+
+      const THREE = AFRAME.THREE;
+      const scene = document.getElementById('scene');
+
+      // ---- World ------------------------------------------------------
+      const world = new RAPIER.World({ x: 0, y: -9.81, z: 0 });
+      world.timestep = 1 / 60;
+      window.world = world;
+
+      // ---- Helpers ----------------------------------------------------
+      const synced = []; // dynamic bodies whose A-Frame el follows the body each tick
+
+      function addStaticBox(pos, size, color) {
+        const [x, y, z] = pos, [w, h, d] = size;
+        const el = document.createElement('a-entity');
+        el.setAttribute('geometry', `primitive: box; width: ${w}; height: ${h}; depth: ${d}`);
+        el.setAttribute('material', `color: ${color}`);
+        el.setAttribute('position', `${x} ${y} ${z}`);
+        scene.appendChild(el);
+        const body = world.createRigidBody(
+          RAPIER.RigidBodyDesc.fixed().setTranslation(x, y, z)
+        );
+        world.createCollider(RAPIER.ColliderDesc.cuboid(w / 2, h / 2, d / 2), body);
+        return { el, body };
+      }
+
+      // ---- Static scaffolding (mirrors experiments/rapier-demo) ------
+      // Ground
+      {
+        const el = document.createElement('a-entity');
+        el.setAttribute('geometry', 'primitive: plane; width: 80; height: 80');
+        el.setAttribute('material', 'color: #4a8a3a');
+        el.setAttribute('rotation', '-90 0 0');
+        scene.appendChild(el);
+        const body = world.createRigidBody(
+          RAPIER.RigidBodyDesc.fixed().setTranslation(0, -0.05, 0)
+        );
+        world.createCollider(RAPIER.ColliderDesc.cuboid(40, 0.05, 40), body);
+      }
+
+      // Perimeter walls
+      addStaticBox([  0, 1, -40], [80, 2,  1], '#8a8a8a');
+      addStaticBox([  0, 1,  40], [80, 2,  1], '#8a8a8a');
+      addStaticBox([-40, 1,   0], [ 1, 2, 80], '#8a8a8a');
+      addStaticBox([ 40, 1,   0], [ 1, 2, 80], '#8a8a8a');
+
+      // Parked cars (Fixed). Same layout as rapier-demo.
+      const parked = [
+        [-8, 0.6, -10, '#2255cc'], [-8, 0.6, -4, '#cc8822'],
+        [-8, 0.6,   2, '#22aa66'], [-8, 0.6,  8, '#aa2266'],
+        [ 8, 0.6, -10, '#663388'], [ 8, 0.6, -4, '#884422'],
+        [ 8, 0.6,   2, '#226688'], [ 8, 0.6,  8, '#888822'],
+      ];
+      for (const [x, y, z, c] of parked) addStaticBox([x, y, z], [2, 1.2, 4], c);
+
+      // ---- Vehicle (LITERAL port) ------------------------------------
+      // Chassis collider half-extents [0.8, 0.2, 0.4]; render box 1.6 x 0.4 x 0.8.
+      // Spawn rotated -90° around Y so chassis-local -X (= forward, where the
+      // engine impulse points and where the front wheels live) aligns with
+      // world -Z (camera default forward).
+      const spawn = {
+        pos: { x: 0, y: 1, z: 15 },
+        quat: (() => {
+          const q = new THREE.Quaternion();
+          q.setFromEuler(new THREE.Euler(0, -Math.PI / 2, 0));
+          return q;
+        })(),
+      };
+
+      const chassisEl = document.createElement('a-entity');
+      chassisEl.setAttribute('id', 'player');
+      chassisEl.setAttribute('geometry', 'primitive: box; width: 1.6; height: 0.4; depth: 0.8');
+      chassisEl.setAttribute('material', 'color: #cc2222');
+      scene.appendChild(chassisEl);
+
+      // Yellow forward indicator: cone sticking out the front (-X local).
+      // Lets you visually confirm which way the chassis thinks "forward" is.
+      const fwd = document.createElement('a-entity');
+      fwd.setAttribute('geometry', 'primitive: cone; radiusBottom: 0.1; radiusTop: 0; height: 0.4; segmentsRadial: 12');
+      fwd.setAttribute('material', 'color: #ffd54a; shader: flat');
+      // Default cone points +Y. Rotate +Z by -90° so cone tip points -X.
+      fwd.setAttribute('rotation', '0 0 90');
+      fwd.setAttribute('position', '-1.0 0.05 0');
+      chassisEl.appendChild(fwd);
+
+      const chassisBody = world.createRigidBody(
+        RAPIER.RigidBodyDesc.dynamic()
+          .setTranslation(spawn.pos.x, spawn.pos.y, spawn.pos.z)
+          .setRotation(spawn.quat)
+          .setCanSleep(false)
+      );
+      world.createCollider(RAPIER.ColliderDesc.cuboid(0.8, 0.2, 0.4), chassisBody);
+      synced.push({ body: chassisBody, el: chassisEl });
+      window.chassisBody = chassisBody;
+
+      // Wheels — values verbatim from the reference's `wheelInfo`.
+      const wheelInfo = {
+        axleCs: { x: 0, y: 0, z: -1 },
+        suspensionRestLength: 0.125,
+        suspensionStiffness: 24,
+        maxSuspensionTravel: 1,
+        sideFrictionStiffness: 3,
+        frictionSlip: 1.5,
+        radius: 0.15,
+      };
+      const wheelPositions = [
+        // front (chassis-local -X is forward)
+        { x: -0.65, y: -0.15, z: -0.45 },
+        { x: -0.65, y: -0.15, z:  0.45 },
+        // rear
+        { x:  0.65, y: -0.15, z: -0.45 },
+        { x:  0.65, y: -0.15, z:  0.45 },
+      ];
+
+      const vehicle = world.createVehicleController(chassisBody);
+      window.vehicle = vehicle;
+      const susDir = { x: 0, y: -1, z: 0 };
+      const wheelOuterEls = [];
+
+      for (let i = 0; i < wheelPositions.length; i++) {
+        const p = wheelPositions[i];
+        vehicle.addWheel(p, susDir, wheelInfo.axleCs, wheelInfo.suspensionRestLength, wheelInfo.radius);
+        vehicle.setWheelSuspensionStiffness(i, wheelInfo.suspensionStiffness);
+        vehicle.setWheelMaxSuspensionTravel(i, wheelInfo.maxSuspensionTravel);
+        vehicle.setWheelFrictionSlip(i, wheelInfo.frictionSlip);
+        vehicle.setWheelSideFrictionStiffness(i, wheelInfo.sideFrictionStiffness);
+
+        // Visual wheel: outer wrapper takes (steer * spin) quat each tick;
+        // inner cylinder is rotated -90° around X so its long axis (originally
+        // +Y) ends up along -Z = the axleCs direction.
+        const outer = document.createElement('a-entity');
+        outer.setAttribute('position', `${p.x} ${p.y} ${p.z}`);
+        chassisEl.appendChild(outer);
+        const inner = document.createElement('a-entity');
+        inner.setAttribute('geometry', `primitive: cylinder; radius: ${wheelInfo.radius}; height: 0.15; segmentsRadial: 16`);
+        inner.setAttribute('material', 'color: #222');
+        inner.setAttribute('rotation', '-90 0 0');
+        outer.appendChild(inner);
+        wheelOuterEls.push(outer);
+      }
+
+      // ---- Input ------------------------------------------------------
+      const input = { forward: false, back: false, left: false, right: false, brake: false, reset: false };
+      const keymap = {
+        KeyW: 'forward', ArrowUp: 'forward',
+        KeyS: 'back',    ArrowDown: 'back',
+        KeyA: 'left',    ArrowLeft: 'left',
+        KeyD: 'right',   ArrowRight: 'right',
+        Space: 'brake',
+        KeyR: 'reset',
+      };
+      addEventListener('keydown', (e) => {
+        if (keymap[e.code]) { input[keymap[e.code]] = true; e.preventDefault(); }
+      });
+      addEventListener('keyup', (e) => {
+        if (keymap[e.code]) input[keymap[e.code]] = false;
+      });
+
+      // ---- Tunables (live-edited from sliders) -----------------------
+      const tune = {
+        accelerateForce: 2,        // reference default
+        brakeForce: 0.05,          // reference default
+        steerAngle: Math.PI / 24,  // reference default ≈ 0.131 rad
+      };
+      let camHeight = 20;
+
+      // ---- Per-frame driver: runs in an A-Frame component tick -------
+      const _up = new THREE.Vector3(0, 1, 0);
+      const _qSteer = new THREE.Quaternion();
+      const _qSpin  = new THREE.Quaternion();
+      const _axleVec = new THREE.Vector3();
+      let physAcc = 0;
+
+      AFRAME.registerComponent('rapier-driver', {
+        tick(time, deltaMs) {
+          const dt = Math.min((deltaMs || 16) / 1000, 0.1);
+
+          // --- 1) Read input -> wheel control inputs --------------------
+          const engineForce = (input.forward ? 1 : 0) * tune.accelerateForce
+                            - (input.back    ? 1 : 0);
+          // Front-wheel drive (matches reference)
+          vehicle.setWheelEngineForce(0, engineForce);
+          vehicle.setWheelEngineForce(1, engineForce);
+
+          const wheelBrake = (input.brake ? 1 : 0) * tune.brakeForce;
+          for (let i = 0; i < 4; i++) vehicle.setWheelBrake(i, wheelBrake);
+
+          const steerDir = (input.left ? 1 : 0) - (input.right ? 1 : 0);
+          const curSteer = vehicle.wheelSteering(0) || 0;
+          const steer = THREE.MathUtils.lerp(curSteer, tune.steerAngle * steerDir, 0.5);
+          vehicle.setWheelSteering(0, steer);
+          vehicle.setWheelSteering(1, steer);
+
+          if (input.reset) {
+            chassisBody.setTranslation(spawn.pos, true);
+            chassisBody.setRotation(spawn.quat, true);
+            chassisBody.setLinvel({ x: 0, y: 0, z: 0 }, true);
+            chassisBody.setAngvel({ x: 0, y: 0, z: 0 }, true);
+          }
+
+          // --- 2) Step world + vehicle at fixed 1/60 --------------------
+          physAcc += dt;
+          let steps = 0;
+          while (physAcc >= world.timestep && steps < 4) {
+            world.step();
+            vehicle.updateVehicle(world.timestep);
+            physAcc -= world.timestep;
+            steps++;
+          }
+
+          // --- 3) Sync dynamic bodies to A-Frame transforms -------------
+          for (const { body, el } of synced) {
+            const t = body.translation();
+            const r = body.rotation();
+            el.object3D.position.set(t.x, t.y, t.z);
+            el.object3D.quaternion.set(r.x, r.y, r.z, r.w);
+          }
+
+          // --- 4) Sync wheel visuals (suspension + steer + spin) --------
+          for (let i = 0; i < wheelOuterEls.length; i++) {
+            const conn  = vehicle.wheelChassisConnectionPointCs(i);
+            const sus   = vehicle.wheelSuspensionLength(i)   || 0;
+            const stY   = vehicle.wheelSteering(i)           || 0;
+            const spin  = vehicle.wheelRotation(i)           || 0;
+            const axle  = vehicle.wheelAxleCs(i);
+
+            const outer = wheelOuterEls[i];
+            outer.object3D.position.set(conn.x, conn.y - sus, conn.z);
+
+            _qSteer.setFromAxisAngle(_up, stY);
+            _axleVec.set(axle.x, axle.y, axle.z);
+            _qSpin.setFromAxisAngle(_axleVec, spin);
+            outer.object3D.quaternion.multiplyQuaternions(_qSteer, _qSpin);
+          }
+
+          // --- 5) Top-down follow camera --------------------------------
+          const cam = document.getElementById('camera').object3D;
+          const ct = chassisBody.translation();
+          cam.position.set(ct.x, ct.y + camHeight, ct.z);
+          cam.rotation.set(-Math.PI / 2, 0, 0);
+
+          // --- 6) Status line: speed + per-wheel forward impulse --------
+          const lv = chassisBody.linvel();
+          const speed = Math.hypot(lv.x, lv.z);
+          const f0 = vehicle.wheelForwardImpulse(0) || 0;
+          const f1 = vehicle.wheelForwardImpulse(1) || 0;
+          status.textContent =
+            `speed ${speed.toFixed(2)} m/s · ` +
+            `engine ${engineForce.toFixed(1)} · ` +
+            `fwd impulse w0 ${f0.toFixed(3)} w1 ${f1.toFixed(3)} · ` +
+            `steer ${steer.toFixed(2)}`;
+        },
+      });
+
+      // Mount the driver on a sentinel entity so its tick is wired up by
+      // A-Frame regardless of when this module finishes initializing.
+      const driverEl = document.createElement('a-entity');
+      driverEl.setAttribute('rapier-driver', '');
+      scene.appendChild(driverEl);
+
+      // ---- Tuning panel wiring ---------------------------------------
+      function bind(id, valId, fn, fmt) {
+        const slider = document.getElementById(id);
+        const out = document.getElementById(valId);
+        const update = () => {
+          const v = parseFloat(slider.value);
+          out.textContent = fmt ? fmt(v) : (v % 1 === 0 ? v.toFixed(0) : v.toString());
+          fn(v);
+        };
+        slider.addEventListener('input', update);
+        update();
+      }
+      bind('t-engine', 'v-engine', (v) => { tune.accelerateForce = v; });
+      bind('t-brake',  'v-brake',  (v) => { tune.brakeForce       = v; });
+      bind('t-steer',  'v-steer',  (v) => { tune.steerAngle       = v; });
+      bind('t-stiff',  'v-stiff',  (v) => { for (let i = 0; i < 4; i++) vehicle.setWheelSuspensionStiffness(i, v); });
+      bind('t-fric',   'v-fric',   (v) => { for (let i = 0; i < 4; i++) vehicle.setWheelFrictionSlip(i, v); });
+      bind('t-side',   'v-side',   (v) => { for (let i = 0; i < 4; i++) vehicle.setWheelSideFrictionStiffness(i, v); });
+      bind('t-cam',    'v-cam',    (v) => { camHeight = v; });
+    </script>
+  </body>
+</html>

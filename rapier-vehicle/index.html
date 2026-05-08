@@ -54,15 +54,10 @@
       /*
        * Direct Rapier integration — no aframe-rapier-physics wrapper.
        *
-       * The previous attempt at a raycast-wheel vehicle used the
-       * Elettrotecnica wrapper and the chassis terminaled at ~0.15 m/s
-       * under any engine force, with no diagnosable opposing force after
-       * many hours. The fresh-context prompt explicitly authorizes going
-       * direct when the wrapper is the obstacle, so this demo:
        *   - imports @dimforge/rapier3d-compat as an ES module,
        *   - owns its own RAPIER.World and steps it from a single
        *     A-Frame component tick,
-       *   - is a LITERAL port of the working public reference at
+       *   - is a port of the working public reference at
        *     https://github.com/isaac-mason/sketches
        *       /tree/main/sketches/rapier/dynamic-raycast-vehicle-controller
        *     — same chassis half-extents, same wheel positions, same

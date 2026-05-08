@@ -56,7 +56,7 @@ Controls (both demos):
 
 ## Original sources
 
-- **`rapier-vehicle`** is a literal port of Isaac Mason's
+- **`rapier-vehicle`** is a port of Isaac Mason's
   [`dynamic-raycast-vehicle-controller` sketch](https://github.com/isaac-mason/sketches/tree/main/sketches/rapier/dynamic-raycast-vehicle-controller)
   (chassis dimensions, wheel positions, all `setWheel*` tuning calls,
   engine/brake/steer defaults, and per-frame update order copied
@@ -69,17 +69,6 @@ Controls (both demos):
 - **A-Frame** is pinned to commit
   [`6a054e85`](https://github.com/aframevr/aframe/commit/6a054e85953bbcc71854bcd64f9abde0897be649)
   (master build) for Three.js r181 compatibility.
-
-## Why two demos?
-
-The arcade-body approach was built first, works great, and is the
-recommended starting point for most use cases. The raycast-vehicle
-demo exists because a previous attempt to wire a `DynamicRayCastVehicleController`
-through the A-Frame wrapper hit an undiagnosable energy sink — the
-chassis would creep at ~0.15 m/s no matter what engine force was
-applied. Going direct to Rapier and porting a known-working reference
-(rather than tuning from first principles) was the path that worked.
-The header comment in `rapier-vehicle/index.html` walks through this.
 
 ## License
 

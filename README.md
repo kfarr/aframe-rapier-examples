@@ -11,7 +11,12 @@ the two techniques back-to-back.
 
 ## Demos
 
-### [`rapier-arcade-body/`](./rapier-arcade-body/index.html)
+Both demos are live on GitHub Pages — click the headings below to run
+them in your browser. Source is in the linked subdirectory.
+
+### [▶ `rapier-arcade-body/`](https://kfarr.github.io/aframe-rapier-examples/rapier-arcade-body/)
+
+[(source)](./rapier-arcade-body/)
 
 Single dynamic rigid body driven by `setLinvel` / `setAngvel` directly —
 no per-wheel physics. Speed-locked steering, X/Z rotation locked so the
@@ -23,7 +28,9 @@ A-Frame wrapper.
 **Best for:** arcade-feel gameplay, top-down driving, vehicles where
 realistic suspension/wheel behavior doesn't matter.
 
-### [`rapier-vehicle/`](./rapier-vehicle/index.html)
+### [▶ `rapier-vehicle/`](https://kfarr.github.io/aframe-rapier-examples/rapier-vehicle/)
+
+[(source)](./rapier-vehicle/)
 
 Proper raycast-wheel vehicle using Rapier's
 [`DynamicRayCastVehicleController`](https://rapier.rs/javascript3d/classes/DynamicRayCastVehicleController.html).
@@ -40,8 +47,9 @@ suspension travel, wheelies, slides, ramp launches.
 
 ## Running
 
-Either demo needs to be served over HTTP (ES modules + WebAssembly
-won't run from a `file://` URL):
+The easiest way is the hosted versions linked above. To run locally,
+serve over HTTP (ES modules + WebAssembly won't run from a `file://`
+URL):
 
 ```sh
 python3 -m http.server 8765
